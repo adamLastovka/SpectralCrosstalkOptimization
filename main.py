@@ -152,6 +152,8 @@ def compute_spectral_separation(df: pd.DataFrame, selected_fluorophores: List[st
     Lower values indicate better separation.
     """
     total_overlap = 0
+    
+    wavelengths = df.iloc[:, 0].values
 
     for f1, f2 in itertools.combinations(selected_fluorophores, 2):
         ex_col1, ex_col2 = f"{f1} EX", f"{f2} EX"
@@ -161,8 +163,13 @@ def compute_spectral_separation(df: pd.DataFrame, selected_fluorophores: List[st
         em1 = df[em_col1].values
         em2 = df[em_col2].values
         
-        excitation_overlap = np.sum(np.minimum(ex1, ex2))
-        emission_overlap = np.sum(np.minimum(em1, em2))
+        total_ex1 =  np.trapezoid(ex1, wavelengths)
+        total_ex2 =  np.trapezoid(em2, wavelengths)
+        total_em1 =  np.trapezoid(em1, wavelengths)
+        total_em2 =  np.trapezoid(em2, wavelengths)
+        
+        excitation_overlap = np.trapezoid(ex1*ex2, wavelengths)/(total_ex1+total_ex2)
+        emission_overlap = np.trapezoid(em1*em2, wavelengths)/(total_em1+total_em2)
         total_overlap += excitation_overlap + emission_overlap
 
     return total_overlap  # Lower is better
@@ -545,14 +552,14 @@ def plot_simulated_emission_interactive(df: pd.DataFrame, fluorophores: list, li
     fig.show()
 
 if __name__ == "__main__":
-    file_path = "FPbase_Spectra_All.csv"
+    file_path = "ATTO465_HEX_TR_CY5_5.csv"
 
     df = pd.read_csv(file_path)
     df.fillna(0, inplace=True)  # Replace NaNs with 0
 
     crosstalk_matrix = compute_crosstalk(df)
 
-    num_fluorophores = 3
+    num_fluorophores = 4
     
     # pareto_solutions = find_optimal_fluorophore_set_MOO(crosstalk_matrix, 
     #                              df, 
