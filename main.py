@@ -16,6 +16,8 @@ from pymoo.termination.default import DefaultMultiObjectiveTermination
 from tabulate import tabulate
 import matplotlib.pyplot as plt
 
+WELL_DEPTH = 0.3 # cm
+
 class FluorophoreSelectionProblem(Problem):
     def __init__(self, crosstalk_matrix, df, num_fluorophores):
         super().__init__(n_var=len(crosstalk_matrix), 
@@ -226,9 +228,10 @@ def compute_expected_emission_crosstalk(wavelengths: list, df: pd.DataFrame, flu
     """
     total_emission = np.zeros_like(wavelengths, dtype=np.float64)
     
+    # Find crosstalk coupling efficiency
     excitation_vector = np.zeros((crosstalk_matrix.shape[1],1))
     for i,fluor in enumerate(fluorophores):
-        excitation_vector[i] = normalized_product_integral(wavelengths,df.loc[f"{fluor}", "EX"] ,excitation_spectrum)
+        excitation_vector[i] = normalized_product_integral(wavelengths,df.loc[f"{fluor}", "EX"] ,excitation_spectrum) 
     
     for i,fluor in enumerate(fluorophores):
         normalized_emission = df.loc[f"{fluor}", "EM"]  * excitation_vector[i]
@@ -454,7 +457,46 @@ def get_fluorophore_colors(wavelengths, df, fluorophores):
 
     return fluorophore_colors, peak_excitation_wavelengths
     
-def plot_simulated_emission_interactive(wavelengths: list, df: pd.DataFrame, fluorophores: list, lights: list, crosstalk_matrix: np.ndarray):
+def plot_emission_relative(wavelengths: list, df: pd.DataFrame, fluorophores: list, C: list, lights: list, power: float):
+    """
+    Simulates and plots expected emission spectra when exciting fluorophores with given light sources using Plotly.
+
+    Args:
+        df (pd.DataFrame): Spectral data with "Excitation" and "Emission" spectra.
+        fluorophores (list): Selected fluorophores to simulate.
+        lights (list): List of (center_wavelength, bandwidth) for each light source.
+    """
+    fig = go.Figure()
+    for light in lights:
+        E = np.vstack([df.loc[f"{fluor}", "ex"] for fluor in fluorophores])  # Excitation Spectra [nFluor × nWavelengths]
+        M = np.vstack([df.loc[f"{fluor}", "em"] for fluor in fluorophores])  # Emission Spectra [nFluor × nWavelengths]
+        phi = np.array([df.loc[f"{fluor}", "QE"] for fluor in fluorophores]) # Fluorophore efficiency [nFluor x 1]
+        epsilon = np.array([df.loc[f"{fluor}", "ExtCoeff"] for fluor in fluorophores]) 
+        
+        S = np.outer(epsilon*C, epsilon*C) # Concentration dependent excitation scaling matrix
+        
+        I_ex_initial = E @ np.array(light) * power # Incident light flux spectrally coupled into each fluorofore [W] [nFluor x 1]
+        I_ex = I_ex_initial * epsilon * C * WELL_DEPTH  # Incident light absorbed by fluorophore [nFluor × 1]
+
+        X = M @ epsilon.T  # [nFluor x nFluor] crosstalk matrix
+        scaled_X = X * S # Crosstalk accouting for crosstalk concentrations
+        F = np.diag(phi) @ scaled_X  # Feedback operator [nFluor x n Fluor] 
+        D = np.diag(phi) @ I_ex # Direct excitation
+        O = np.linalg.solve(np.eye(len(fluorophores) - F, D))  # Closed form solution for infinite feedback series
+                            
+        final_spectrum = M.T @ O  # [150×1] emission spectrum
+
+    fig.update_layout(
+        title="Simulated Emission Spectrum Under Multi-Source Excitation",
+        xaxis_title="Wavelength (nm)",
+        yaxis_title="Intensity",
+        template="plotly_dark",
+        hovermode="x unified"
+    )
+
+    fig.show()
+    
+def plot_emission_power(wavelengths: list, df: pd.DataFrame, fluorophores: list, lights: list, crosstalk_matrix: np.ndarray):
     """
     Simulates and plots expected emission spectra when exciting fluorophores with given light sources using Plotly.
 
@@ -609,7 +651,7 @@ if __name__ == "__main__":
     fluor_spectra_file = "Fluorophores\\Gentec_All.csv"
     fluor_props_file = "Fluorophores\\Fluorophore_Properties.xlsx"
     
-    # Read in fluorophore data
+    ### Read in fluorophore data ###
     fluor_spectra = pd.read_csv(fluor_spectra_file)
     fluor_spectra.fillna(0, inplace=True)  # Replace NaNs with 0
     wavelengths = fluor_spectra.iloc[:,0].values
@@ -626,7 +668,7 @@ if __name__ == "__main__":
         
     fluor_df = pd.DataFrame(fluor_data_list,index = fluor_properties.index, columns=["QE","ExtCoeff","EX","EM"])
 
-    # Fluorophore Selection Specification
+    ### Fluorophore Selection ###
     fluorophore_optimization = True # Select fluorophores to minimize crosstalk and spectral overlap or use manual selection
 
     num_fluorophores = 3 # Number of fluorophores to use
@@ -660,21 +702,22 @@ if __name__ == "__main__":
     # Plot spectra of selected fluorophores
     plot_spectral_overlap_interactive(wavelengths,fluor_df, best_fluorofores)
     
-    # Illumination specification
+    ### Illumination specification ###
     _, peak_excitation_wavelengths = get_fluorophore_colors(wavelengths,fluor_df, best_fluorofores)
     
     # LED_data_files = ["LEDS\\XEG-CYAN_Processed.csv", "LEDS\\XEG-AMBER_Processed.csv", "LEDS\\XEG-PHOTORED_Processed.csv"]
     # lights = [np.genfromtxt(file_name,delimiter=",",skip_header=True)[:,1] for file_name in LED_data_files] # Imported spectra
     lights = [generate_light_spectra(wavelengths, center, 10, type="band") for center in peak_excitation_wavelengths.values()] # Generated spectra
     
-    # Excitation and emission simulation
+    ### Excitation and emission simulation ###
     excitation_efficiency = compute_excitation_efficiency(wavelengths, fluor_df, best_fluorofores, lights)  # Compute excitation efficiency using lights directly
     print("\nExcitation Efficiency")
     print(tabulate(list(zip(best_fluorofores,excitation_efficiency)),headers=["Fluorophore","Excitation Efficiency"]))
     
-    plot_simulated_emission_interactive(wavelengths, fluor_df, best_fluorofores, lights, best_fluorofores_matrix)
+    plot_emission_relative(wavelengths, fluor_df, best_fluorofores, lights, best_fluorofores_matrix)
+    plot_emission_power(wavelengths, fluor_df, best_fluorofores, lights, best_fluorofores_matrix)
     
-    # Filter Evaluation
+    ### Filter Evaluation ###
     ex_filters = split_multiband_filter(np.genfromtxt("Filters\\TriBandpassFAMROXCy5EX.csv",delimiter=',',skip_header=True))
     em_filters = split_multiband_filter(np.genfromtxt("Filters\\TriBandpassFAMROXCy5EM.csv",delimiter=',',skip_header=True))
     
