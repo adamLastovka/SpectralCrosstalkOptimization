@@ -456,35 +456,73 @@ def get_fluorophore_colors(wavelengths, df, fluorophores):
         peak_excitation_wavelengths[fluor] = peak_excitation_wavelength
 
     return fluorophore_colors, peak_excitation_wavelengths
+
+def normalize_area(wavelengths:np.ndarray,spectrum:np.ndarray):
+    """Normalizes spectrum to have area = 1 giving a probability density function
+
+    Args:
+        wavelengths (np.ndarray): Wavelength array
+        spectrum (np.ndarray): Spectrum
+
+    Returns:
+        np.ndarray: Normalized spectrum
+    """
+    area = np.trapezoid(spectrum, wavelengths)
+    return spectrum / area if area > 0 else spectrum
     
-def plot_emission_relative(wavelengths: list, df: pd.DataFrame, fluorophores: list, C: list, lights: list, power: float):
+def plot_emission_power(wavelengths: list, df: pd.DataFrame, fluorophores: list, C_vect: list, lights: list, P_vect: float):
     """
     Simulates and plots expected emission spectra when exciting fluorophores with given light sources using Plotly.
 
     Args:
         df (pd.DataFrame): Spectral data with "Excitation" and "Emission" spectra.
         fluorophores (list): Selected fluorophores to simulate.
-        lights (list): List of (center_wavelength, bandwidth) for each light source.
+        C_vect (list): List of fluorophore concentrations
+        lights (list): List of normalized excitation light emission spectra for each light source.
+        power: List of total emission power of each LED
     """
     fig = go.Figure()
-    for light in lights:
-        E = np.vstack([df.loc[f"{fluor}", "ex"] for fluor in fluorophores])  # Excitation Spectra [nFluor × nWavelengths]
-        M = np.vstack([df.loc[f"{fluor}", "em"] for fluor in fluorophores])  # Emission Spectra [nFluor × nWavelengths]
+    
+    i = 1
+    for light,P,C in zip(lights,P_vect,C_vect):
+        norm_light = normalize_area(wavelengths,light)*P # Normalize so that total area = P
+        
+        E = np.vstack([normalize_area(wavelengths,df.loc[f"{fluor}", "EX"]) for fluor in fluorophores])  # Excitation Spectra [nFluor × nWavelengths]
+        M = np.vstack([normalize_area(wavelengths,df.loc[f"{fluor}", "EM"]) for fluor in fluorophores])  # Emission Spectra [nFluor × nWavelengths]
         phi = np.array([df.loc[f"{fluor}", "QE"] for fluor in fluorophores]) # Fluorophore efficiency [nFluor x 1]
         epsilon = np.array([df.loc[f"{fluor}", "ExtCoeff"] for fluor in fluorophores]) 
         
         S = np.outer(epsilon*C, epsilon*C) # Concentration dependent excitation scaling matrix
         
-        I_ex_initial = E @ np.array(light) * power # Incident light flux spectrally coupled into each fluorofore [W] [nFluor x 1]
-        I_ex = I_ex_initial * epsilon * C * WELL_DEPTH  # Incident light absorbed by fluorophore [nFluor × 1]
+        I_ex_initial = E @ norm_light # Incident light flux spectrally coupled into each fluorofore [W] [nFluor x 1]
+        
+        A = epsilon * C * WELL_DEPTH # Absorbance
+        fraction_absorbed = 1 - 10**-A # Beer-lambert law
+        I_ex = I_ex_initial * fraction_absorbed   # Incident light absorbed by fluorophore [nFluor × 1]
 
-        X = M @ epsilon.T  # [nFluor x nFluor] crosstalk matrix
-        scaled_X = X * S # Crosstalk accouting for crosstalk concentrations
+        X = M @ E.T  # [nFluor x nFluor] crosstalk matrix
+        scaled_X = X * S # Crosstalk accouting for concentrations and extinction coeff
         F = np.diag(phi) @ scaled_X  # Feedback operator [nFluor x n Fluor] 
-        D = np.diag(phi) @ I_ex # Direct excitation
-        O = np.linalg.solve(np.eye(len(fluorophores) - F, D))  # Closed form solution for infinite feedback series
-                            
-        final_spectrum = M.T @ O  # [150×1] emission spectrum
+        D = np.diag(phi) @ I_ex # Direct excitation (no crosstalk) [nFluor x 1]
+        O = np.linalg.solve(np.eye(len(fluorophores)) - F, D)  # Closed form solution for infinite feedback series [nFluor x 1]
+        
+        # n = 2  # 
+        # total_emission = sum(np.linalg.matrix_power(F, k) @ D for k in range(n+1)) # nth order crosstalk emission 
+                        
+        final_spectrum = M.T @ O  # [nWavelengths × 1] emission spectrum
+        
+        emission_color = wavelength_to_rgb(wavelengths[final_spectrum.argmax()])
+        excitation_color = wavelength_to_rgb(wavelengths[light.argmax()])
+        
+        fig.add_trace(go.Scatter(
+            x=wavelengths, y=norm_light, mode='lines',
+            name=f"Excitation Light {i}[W]", line=dict(width=2, color=excitation_color)
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=wavelengths, y=final_spectrum, mode='lines',
+            name=f"Total Emission {i}[W]", line=dict(width=2, color=emission_color)
+        ))
 
     fig.update_layout(
         title="Simulated Emission Spectrum Under Multi-Source Excitation",
@@ -496,7 +534,7 @@ def plot_emission_relative(wavelengths: list, df: pd.DataFrame, fluorophores: li
 
     fig.show()
     
-def plot_emission_power(wavelengths: list, df: pd.DataFrame, fluorophores: list, lights: list, crosstalk_matrix: np.ndarray):
+def plot_emission_relative(wavelengths: list, df: pd.DataFrame, fluorophores: list, lights: list, crosstalk_matrix: np.ndarray):
     """
     Simulates and plots expected emission spectra when exciting fluorophores with given light sources using Plotly.
 
@@ -669,10 +707,11 @@ if __name__ == "__main__":
     fluor_df = pd.DataFrame(fluor_data_list,index = fluor_properties.index, columns=["QE","ExtCoeff","EX","EM"])
 
     ### Fluorophore Selection ###
-    fluorophore_optimization = True # Select fluorophores to minimize crosstalk and spectral overlap or use manual selection
+    fluorophore_optimization = False # Select fluorophores to minimize crosstalk and spectral overlap or use manual selection
 
     num_fluorophores = 3 # Number of fluorophores to use
     exclusion_list = ["ATTO565"]
+    fluor_conc = [100e-9] * num_fluorophores # [M]
 
     crosstalk_matrix = compute_crosstalk(wavelengths,fluor_df)
     crosstalk_matrix = crosstalk_matrix.drop(index=exclusion_list, columns=exclusion_list)
@@ -690,7 +729,7 @@ if __name__ == "__main__":
         best_fluorofores, best_fluorofores_matrix, min_crosstalk, min_overlap = find_optimal_fluorophore_set(wavelengths, fluor_df, crosstalk_matrix, num_fluorophores)
 
     else: # manual selection
-        best_fluorofores = ["FAM","ROX","Cy5"]
+        best_fluorofores = ["HEX","TexasRed","Cy5_5"]
         
         best_fluorofores_matrix = crosstalk_matrix.loc[list(best_fluorofores), list(best_fluorofores)]
         
@@ -708,6 +747,7 @@ if __name__ == "__main__":
     # LED_data_files = ["LEDS\\XEG-CYAN_Processed.csv", "LEDS\\XEG-AMBER_Processed.csv", "LEDS\\XEG-PHOTORED_Processed.csv"]
     # lights = [np.genfromtxt(file_name,delimiter=",",skip_header=True)[:,1] for file_name in LED_data_files] # Imported spectra
     lights = [generate_light_spectra(wavelengths, center, 10, type="band") for center in peak_excitation_wavelengths.values()] # Generated spectra
+    LED_power = [1] * num_fluorophores # [W]
     
     ### Excitation and emission simulation ###
     excitation_efficiency = compute_excitation_efficiency(wavelengths, fluor_df, best_fluorofores, lights)  # Compute excitation efficiency using lights directly
@@ -715,7 +755,7 @@ if __name__ == "__main__":
     print(tabulate(list(zip(best_fluorofores,excitation_efficiency)),headers=["Fluorophore","Excitation Efficiency"]))
     
     plot_emission_relative(wavelengths, fluor_df, best_fluorofores, lights, best_fluorofores_matrix)
-    plot_emission_power(wavelengths, fluor_df, best_fluorofores, lights, best_fluorofores_matrix)
+    plot_emission_power(wavelengths, fluor_df, best_fluorofores,fluor_conc, lights, LED_power)
     
     ### Filter Evaluation ###
     ex_filters = split_multiband_filter(np.genfromtxt("Filters\\TriBandpassFAMROXCy5EX.csv",delimiter=',',skip_header=True))
@@ -741,7 +781,7 @@ if __name__ == "__main__":
     print("\nEX Filter - Fluorophore EX Efficiency")
     print(tabulate(np.transpose(np.expand_dims(EX_Filter_efficiency,axis=1)),headers=best_fluorofores))
     
-    # Compute fluorophore emission - emission filter overlap (% of emitted spectrum that is transmitted through excitation filter) - determines if EM filter has correct band
+    # Compute fluorophore emission - emission filter overlap (% of emitted spectrum that overlaps excitation filter - normalized to ignore absolute transmissivity) - determines if EM filter has correct band
     if len(em_filters) == 1:
         EM_Filter_efficiency = [normalized_product_integral(wavelengths,fluor_df.loc[f"{fluor}","EM"],normalizeArray(em_filters[0][:,1])) for fluor in best_fluorofores]
     else:
@@ -750,7 +790,7 @@ if __name__ == "__main__":
     print("\nFluorophore EM - EM Filter Efficiency")
     print(tabulate(np.transpose(np.expand_dims(EM_Filter_efficiency,axis=1)),headers=best_fluorofores))
     
-    # Compute excitation-emission filter crosstalk (% of excitation light passing through emission filter) - should be 0
+    # Compute excitation-emission filter bleedthrough (% of excitation light passing through emission filter) - should be 0
     combination = []
     EX_EM_overlap = []
     for f1, f2 in itertools.product([0,1,2], [0,1,2]):
