@@ -2,8 +2,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-file_name = "LEDs\XEG-PCYELLOW.csv"
-out_file_name = "LEDs\XEG-PCYELLOW_Processed.csv"
+file_name = "LEDs\\Raw\\XEG-RedOrange.csv"
+out_file_name = "LEDs\\XEG-RedOrange_Processed.csv"
 
 raw_data = np.genfromtxt(file_name,delimiter=',',skip_header=True)
 

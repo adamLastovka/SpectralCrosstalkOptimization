@@ -687,12 +687,7 @@ def generate_light_spectra(wavelengths, center, width, type="gauss"):
     else:
         raise Exception("Invalid spectral distribution type")
 
-if __name__ == "__main__":
-    # Specify fluorophore data files
-    fluor_spectra_file = "Fluorophores\\Gentec_All.csv"
-    fluor_props_file = "Fluorophores\\Fluorophore_Properties.xlsx"
-    
-    ### Read in fluorophore data ###
+def generate_fluor_df(fluor_spectra_file, fluor_props_file):
     fluor_spectra = pd.read_csv(fluor_spectra_file)
     fluor_spectra.fillna(0, inplace=True)  # Replace NaNs with 0
     wavelengths = fluor_spectra.iloc[:,0].values
@@ -708,6 +703,15 @@ if __name__ == "__main__":
             fluor_row = None
         
     fluor_df = pd.DataFrame(fluor_data_list,index = fluor_properties.index, columns=["QE","ExtCoeff","EX","EM"])
+    return wavelengths,fluor_df
+
+if __name__ == "__main__":
+    # Specify fluorophore data files
+    fluor_spectra_file = "Fluorophores\\Gentec_All.csv"
+    fluor_props_file = "Fluorophores\\Fluorophore_Properties.xlsx"
+    
+    ### Read in fluorophore data ###
+    wavelengths, fluor_df = generate_fluor_df(fluor_spectra_file, fluor_props_file)
 
     ### Fluorophore Selection ###
     fluorophore_optimization = False # Select fluorophores to minimize crosstalk and spectral overlap or use manual selection
