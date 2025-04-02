@@ -758,7 +758,7 @@ if __name__ == "__main__":
     em_filters = [generate_light_spectra(wavelengths, center, 10, type="band") for center in peak_em_wavelengths]
     
     # Light seleciton
-    LED_data_files = ["LEDS\\XEG-CYAN_Processed.csv", "LEDS\\XEG-AMBER_Processed.csv", "LEDS\\XEG-PHOTORED_Processed.csv"]
+    LED_data_files = ["LEDS\\XEG-CYAN.csv", "LEDS\\XEG-AMBER.csv", "LEDS\\XEG-PHOTORED.csv"]
     lights = [np.genfromtxt(file_name,delimiter=",",skip_header=True)[:,1] for file_name in LED_data_files] # Imported spectra
     # lights = [generate_light_spectra(wavelengths, center, 10, type="band") for center in peak_excitation_wavelengths.values()] # Generated spectra
     LED_power = [1] * num_fluorophores # [W]

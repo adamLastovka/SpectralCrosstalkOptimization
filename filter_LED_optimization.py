@@ -17,11 +17,13 @@ class Component():
     spectrum: np.ndarray
     spectral_range: Tuple[float, float]
     peak_wavelength: float
+    name: str
     
-    def __init__(self, index, wavelengths, spectrum, type):
+    def __init__(self, index, wavelengths, spectrum, type, name=None):
         self.index = index
         self.spectrum = spectrum
         self.type = type
+        self.name = name
         
         self.spectral_range = self.calculate_spectral_range(wavelengths, spectrum, 0.001)  # (start_wl, end_wl) at 0.1% threshold
         
@@ -49,7 +51,7 @@ def calculate_emission_power(wavelengths, df, fluorophores, C_vect, lights):
         float: Total emission power
         list: Power per fluorophore
     """
-    mean_em_power = 0
+    total_em_power = 0
     coupled_ex_power = []
     em_power_per_fluorophore = []
     
@@ -78,9 +80,157 @@ def calculate_emission_power(wavelengths, df, fluorophores, C_vect, lights):
 
         coupled_ex_power.append(I_ex)
         em_power_per_fluorophore.append(O)
-        mean_em_power += sum(O)
     
-    return coupled_ex_power, mean_em_power, em_power_per_fluorophore
+    return coupled_ex_power, em_power_per_fluorophore
+
+def plot_filter_spectra_components(wavelengths: list, df, fluorophores: list, ex_filters: list, em_filters: list, lights: list):
+    """
+    Plots fluorophore excitation & emission spectra with highlighted overlap regions using Plotly.
+    
+    Args:
+        df (pd.DataFrame): Spectral data.
+        fluorophores (List[str]): Selected fluorophores.
+        ex_filters (List[Component]): List of excitation filter component objects
+        em_filters (List[Component]): List of emission filter component objects
+        lights (List[Component]): List of illumination light component objects
+    """
+    fluorophore_colors,_,_ = get_fluorophore_colors(wavelengths, df, fluorophores)
+    fig = go.Figure()
+    
+    # Plot Excitation filter spectra
+    if len(ex_filters) == 1:
+        ex_filter = ex_filters[0]
+        fig.add_trace(go.Scatter(
+                x=wavelengths, y=ex_filter.spectrum, mode='lines',
+                name=f"{ex_filter.name}", line=dict(width=2, dash='dash', color="white")
+            ))
+    else:
+        if len(ex_filters) != len(fluorophores):
+            raise Exception("Number of filters must be 1 or equal to number of fluorophores")
+        
+        for fluorophore, ex_filter in zip(fluorophores,ex_filters):
+            fig.add_trace(go.Scatter(
+                    x=wavelengths, y=ex_filter.spectrum, mode='lines',
+                    name=f"{ex_filter.name}", line=dict(width=2, dash='dash', color="white")
+                ))
+            
+    # Plot Emission filter spectra
+    if len(em_filters) == 1:
+        em_filter = em_filters[0]
+        fig.add_trace(go.Scatter(
+                x=wavelengths, y=em_filter.spectrum, mode='lines',
+                name=f"{em_filter.name}", line=dict(width=2, dash='dash', color="gray")
+            ))
+    else:
+        if len(em_filters) != len(fluorophores):
+            raise Exception("Number of filters must be 1 or equal to number of fluorophores")
+        
+        for fluorophore, em_filter in zip(fluorophores,em_filters):
+            fig.add_trace(go.Scatter(
+                    x=wavelengths, y=em_filter.spectrum, mode='lines',
+                    name=f"{em_filter.name}", line=dict(width=2, dash='dash', color="gray")
+                ))
+
+    # Plot individual spectra with assigned colors
+    for fluor in fluorophores:
+        color = fluorophore_colors[fluor]  # Get fluorophore color
+        em, ex = df.loc[f"{fluor}", "EM"], df.loc[f"{fluor}", "EX"]
+
+        fig.add_trace(go.Scatter(
+            x=wavelengths, y=em, mode='lines',
+            name=f"{fluor} Emission", line=dict(width=2, color=color)
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=wavelengths, y=ex, mode='lines',
+            name=f"{fluor} Excitation", line=dict(width=2, dash='dash', color=color)
+        ))
+            
+    for light in lights:
+        peak_wavelength = wavelengths[light.spectrum.argmax()]
+        color = wavelength_to_rgb(peak_wavelength)
+
+        fig.add_trace(go.Scatter(
+            x=wavelengths, y=light.spectrum, mode='lines',
+            name=f"{light.name}", line=dict(width=2, dash='dot', color=color)
+        ))
+
+    # Update layout with overlap percentage info
+    fig.update_layout(
+        title=f"Filter Efficiency Plot",
+        xaxis_title="Wavelength (nm)",
+        yaxis_title="Intensity/Transmittance",
+        template="plotly_dark",
+        hovermode="x unified"
+    )
+
+    fig.show()
+    
+def plot_emission_power_components(wavelengths: list, df: pd.DataFrame, fluorophores: list, C_vect: list, ex_filters: list, lights: list, P_vect: float):
+    """
+    Simulates and plots expected emission spectra when exciting fluorophores with given light sources using Plotly.
+
+    Args:
+        df (pd.DataFrame): Spectral data with "Excitation" and "Emission" spectra.
+        fluorophores (list): Selected fluorophores to simulate.
+        C_vect (list): List of fluorophore concentrations
+        lights (List[Component]): List of excitation light component objects
+        ex_filters (List[Component]): List of excitation filter component objects
+        power: List of total emission power of each LED
+    """
+    fig = go.Figure()
+    
+    for i, (light,ex_filter,P,C) in enumerate(zip(lights,ex_filters,P_vect,C_vect)):
+        filtered_light = ex_filter.spectrum * light.spectrum
+        
+        norm_light = normalize_area(wavelengths,filtered_light)*P # Normalize so that total area = P
+        
+        E = np.vstack([normalize_area(wavelengths,df.loc[f"{fluor}", "EX"]) for fluor in fluorophores])  # Excitation Spectra [nFluor × nWavelengths]
+        M = np.vstack([normalize_area(wavelengths,df.loc[f"{fluor}", "EM"]) for fluor in fluorophores])  # Emission Spectra [nFluor × nWavelengths]
+        phi = np.array([df.loc[f"{fluor}", "QE"] for fluor in fluorophores]) # Fluorophore efficiency [nFluor x 1]
+        epsilon = np.array([df.loc[f"{fluor}", "ExtCoeff"] for fluor in fluorophores]) 
+        
+        S = np.outer(epsilon*C, epsilon*C) # Concentration dependent excitation scaling matrix
+        
+        I_ex_initial = E @ norm_light # Incident light flux spectrally coupled into each fluorofore [W] [nFluor x 1]
+        
+        A = epsilon * C * WELL_DEPTH # Absorbance
+        fraction_absorbed = 1 - 10**-A # Beer-lambert law
+        I_ex = I_ex_initial * fraction_absorbed   # Incident light absorbed by fluorophore [nFluor × 1]
+
+        X = M @ E.T  # [nFluor x nFluor] crosstalk matrix
+        scaled_X = X * S # Crosstalk accouting for concentrations and extinction coeff
+        F = np.diag(phi) @ scaled_X  # Feedback operator [nFluor x n Fluor] 
+        D = np.diag(phi) @ I_ex # Direct excitation (no crosstalk) [nFluor x 1]
+        O = np.linalg.solve(np.eye(len(fluorophores)) - F, D)  # Closed form solution for infinite feedback series [nFluor x 1]
+        
+        # n = 2  # 
+        # total_emission = sum(np.linalg.matrix_power(F, k) @ D for k in range(n+1)) # nth order crosstalk emission 
+                        
+        final_spectrum = M.T @ O  # [nWavelengths × 1] emission spectrum
+        
+        emission_color = wavelength_to_rgb(wavelengths[final_spectrum.argmax()])
+        excitation_color = wavelength_to_rgb(wavelengths[light.spectrum.argmax()])
+        
+        fig.add_trace(go.Scatter(
+            x=wavelengths, y=norm_light, mode='lines',
+            name=f" Filtered {light.name} Intensity Distribution [W]", line=dict(width=2, color=excitation_color)
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=wavelengths, y=final_spectrum, mode='lines',
+            name=f"Emission response of {light.name} [W]", line=dict(width=2, color=emission_color)
+        ))
+
+    fig.update_layout(
+        title="Simulated Emission Spectrum Under Multi-Source Excitation",
+        xaxis_title="Wavelength (nm)",
+        yaxis_title="Intensity",
+        template="plotly_dark",
+        hovermode="x unified"
+    )
+
+    fig.show()
 
 def generate_combinations(filtered_components: dict, fluorophores: list):
     """
@@ -155,8 +305,10 @@ def optimize_filters_and_leds(wavelengths, fluor_df, fluorophores, fluor_conc, f
                 filtered_leds.append(ex_filter.spectrum * norm_light)                    
                 
             # Calculate emission power
-            coupled_ex_power, mean_em_power, em_power_per_fluorophore = calculate_emission_power(
+            coupled_ex_power, em_power_per_fluorophore = calculate_emission_power(
                 wavelengths, fluor_df, fluorophores, fluor_conc, filtered_leds)
+            
+            mean_em_power = np.mean(np.sum(em_power_per_fluorophore, axis = 0))
             
             # Calculate additional metrics
             metrics = {}
@@ -166,19 +318,22 @@ def optimize_filters_and_leds(wavelengths, fluor_df, fluorophores, fluor_conc, f
             # LED-EX Filter efficiency
             led_ex_efficiency = [normalized_product_integral(wavelengths, led.spectrum, ex_filter.spectrum) 
                                 for led, ex_filter in zip(led_combo, ex_combo)]
-            metrics['led_ex_efficiency'] = np.mean(led_ex_efficiency)
+            metrics['led_ex_efficiency'] = led_ex_efficiency
+            metrics['mean_led_ex_efficiency'] = np.mean(led_ex_efficiency)
             
             # EX Filter - fluorophore excitation overlap
             ex_fluor_efficiency = [normalized_product_integral(wavelengths, normalizeArray(ex_filter.spectrum), 
                                 fluor_df.loc[f"{fluor}", "EX"]) 
                                 for fluor, ex_filter in zip(fluorophores, ex_combo)]
-            metrics['ex_fluor_efficiency'] = np.mean(ex_fluor_efficiency)
+            metrics['ex_fluor_efficiency'] = ex_fluor_efficiency
+            metrics['mean_ex_fluor_efficiency'] = np.mean(ex_fluor_efficiency)
             
             # Fluorophore emission - emission filter overlap
             em_filter_efficiency = [normalized_product_integral(wavelengths, fluor_df.loc[f"{fluor}", "EM"], 
                                 normalizeArray(em_filter.spectrum)) 
                                 for fluor, em_filter in zip(fluorophores, em_combo)]
             metrics['em_filter_efficiency'] = em_filter_efficiency
+            metrics['mean_em_filter_efficiency'] = np.mean(em_filter_efficiency)
             
             # Store result
             results.append({
@@ -196,86 +351,96 @@ def optimize_filters_and_leds(wavelengths, fluor_df, fluorophores, fluor_conc, f
     
     return results_df
 
-def plot_optimization_results(results_df,wavelengths,fluor_df,fluorophores,led_power):
+def plot_optimization_results(results_df,wavelengths,fluor_df,fluorophores,fluor_conc,led_power, hide_plots=False):
     """
     Creates Pareto plots to visualize optimization results.
     """
     # Create Pareto scatter plot
     fig = go.Figure()
     
-    # Add scatter plot for total emission power vs. emission filter efficiency
-    for i, fluorophore in enumerate(fluorophores):
+    max_power_idx = results_df[results_df['mean_em_power'] == results_df['mean_em_power'].max()].index
+    best_idx = results_df.loc[max_power_idx,'mean_em_filter_efficiency'].idxmax()
+    
+    if not hide_plots:
+        # Add scatter plot for total emission power vs. emission filter efficiency
+        for i, fluorophore in enumerate(fluorophores):
+            fig.add_trace(go.Scatter(
+                x=list(map(lambda x: x[i][i],results_df['em_power_per_fluorophore'][:])),
+                y=list(map(lambda x: x[i],results_df['em_filter_efficiency'])),
+                mode='markers',
+                marker=dict(size=10),
+                text=results_df['config_id'],
+                hovertemplate="<b>Config ID:</b> %{text}<br>" +
+                            "<b>Emission Power:</b> %{x:.2e}<extra></extra><br>" +
+                            "<b>Emission Filter Efficiency:</b> %{y:.2f}",  
+                name=f"{fluorophore}"
+            ))
+            
+            # Highlight the best result
+            fig.add_trace(go.Scatter(
+                x=[results_df.loc[best_idx, 'em_power_per_fluorophore'][i][i]],
+                y=[results_df.loc[best_idx, 'em_filter_efficiency'][i]],
+                mode='markers',
+                marker=dict(size=15, color='white', symbol='star'),
+                name='Best Configuration'
+            ))
+            
         fig.add_trace(go.Scatter(
-            x=list(map(lambda x: x[i][i],results_df['em_power_per_fluorophore'][:])),
-            y=list(map(lambda x: x[i],results_df['em_filter_efficiency'])),
+            x=results_df['mean_em_power'],
+            y=results_df["mean_em_filter_efficiency"],
             mode='markers',
-            marker=dict(size=10),
             text=results_df['config_id'],
             hovertemplate="<b>Config ID:</b> %{text}<br>" +
-                        "<b>Emission Power:</b> %{x:.2e}<extra></extra><br>" +
-                        "<b>Emission Filter Efficiency:</b> %{y:.2f}",  
-            name=f"{fluorophore}"
+                            "<b>Emission Power:</b> %{x:.2e}<extra></extra><br>" +
+                            "<b>Emission Filter Efficiency:</b> %{y:.2f}", 
+            marker=dict(size=10),
+            name=f"Mean"
         ))
         
-    fig.add_trace(go.Scatter(
-        x=results_df['mean_em_power'],
-        y=list(map(lambda x: np.mean(x),results_df['em_filter_efficiency'])),
-        mode='markers',
-        text=results_df['config_id'],
-        hovertemplate="<b>Config ID:</b> %{text}<br>" +
-                        "<b>Emission Power:</b> %{x:.2e}<extra></extra><br>" +
-                        "<b>Emission Filter Efficiency:</b> %{y:.2f}", 
-        marker=dict(size=10),
-        name=f"Mean"
-    ))
-    
-    # Highlight the best configuration
-    best_idx = results_df['mean_em_power'].idxmax()
-    fig.add_trace(go.Scatter(
-        x=[results_df.loc[best_idx, 'em_power_per_fluorophore']],
-        y=[results_df.loc[best_idx, 'em_filter_efficiency']],
-        mode='markers',
-        marker=dict(size=15, color='red', symbol='star'),
-        name='Best Configuration'
-    ))
-    
-    fig.update_layout(
-        title='Filter & LED Optimization Results',
-        xaxis_title='Emission Power',
-        yaxis_title='Emission Filter Efficiency',
-        template='plotly_dark',
-        hovermode='closest'
-    )
-    
-    fig.show()
-    
-    # Create parallel coordinates plot
-    dimensions = [
-        dict(label='Config ID', values=list(range(len(results_df))),  # Add config IDs as a categorical axis
-             ticktext=results_df['config_id'], tickvals=list(range(len(results_df)))),
-        dict(range=[0, results_df['mean_em_power'].max()],
-             label='Total Emission Power', values=results_df['mean_em_power']),
-        dict(range=[0, 1],
-             label='LED-EX Efficiency', values=results_df['led_ex_efficiency']),
-        dict(range=[0, 1],
-             label='EX-Fluor Efficiency', values=results_df['ex_fluor_efficiency']),
-        dict(range=[0, 1],
-             label='EM Filter Efficiency', values=list(map(lambda x: np.mean(x),results_df['em_filter_efficiency'])))
-    ]
-    
-    fig2 = go.Figure(data=go.Parcoords(
-        line=dict(color=results_df['mean_em_power'],
-                colorscale='Viridis',
-                showscale=True),
-                dimensions=dimensions,
-    ))
-    
-    fig2.update_layout(
-        title='Multi-Dimensional Optimization Results',
-        template='plotly_dark'
-    )
-    
-    fig2.show()
+        # Highlight the best result
+        fig.add_trace(go.Scatter(
+            x=[results_df.loc[best_idx, 'mean_em_power']],
+            y=[results_df.loc[best_idx, 'mean_em_filter_efficiency']],
+            mode='markers',
+            marker=dict(size=15, color='white', symbol='star'),
+            name='Best Configuration'
+        ))
+        
+        fig.update_layout(
+            title='Filter & LED Optimization Results',
+            xaxis_title='Emission Power',
+            yaxis_title='Emission Filter Efficiency',
+            template='plotly_dark',
+            hovermode='closest'
+        )
+        
+        fig.show()
+        
+        # Create parallel coordinates plot
+        dimensions = [
+            dict(range=[0, results_df['mean_em_power'].max()],
+                label='Total Emission Power', values=results_df['mean_em_power']),
+            dict(range=[0, 1],
+                label='LED-EX Efficiency', values=results_df['mean_led_ex_efficiency']),
+            dict(range=[0, 1],
+                label='EX-Fluor Efficiency', values=results_df['mean_ex_fluor_efficiency']),
+            dict(range=[0, 1],
+                label='EM Filter Efficiency', values=results_df['mean_em_filter_efficiency'])
+        ]
+        
+        fig2 = go.Figure(data=go.Parcoords(
+            line=dict(color=results_df['mean_em_power'],
+                    colorscale='Viridis',
+                    showscale=True),
+                    dimensions=dimensions,
+        ))
+        
+        fig2.update_layout(
+            title='Multi-Dimensional Optimization Results',
+            template='plotly_dark'
+        )
+        
+        fig2.show()
     
     # Display the best configuration
     best_config = results_df.loc[best_idx, 'configuration']
@@ -283,21 +448,39 @@ def plot_optimization_results(results_df,wavelengths,fluor_df,fluorophores,led_p
     best_em_filters = best_config["em_combo"]
     best_leds = best_config["led_combo"]
     
+    # Display metrics for best config
     print(f"\nBest Configuration:")
-    print(f"Total Power: {results_df.loc[best_idx, 'mean_em_power']:.3e}")
-    print(f"LED-EX Efficiency: {results_df.loc[best_idx, 'led_ex_efficiency']:.2f}")
-    print(f"EX-Fluor Efficiency: {results_df.loc[best_idx, 'ex_fluor_efficiency']:.2f}")
-    print(f"EM Filter Efficiency: {results_df.loc[best_idx, 'em_filter_efficiency']:.2f}")
+    print(f"Config ID: {results_df.loc[best_idx, 'config_id']}")
+    
+    table_headers = ["Fluorophore", "LEDs", "LED-EX Efficiency", "EX Filters", "EX filter-Fluor EX Efficiency", "EM filters", "Fluor EM-filter Efficiency"]
+    led_names = list(map(lambda x: x.name, best_leds))
+    led_ex_eff = results_df.loc[best_idx, 'led_ex_efficiency']
+    ex_filter_names = list(map(lambda x: x.name, best_ex_filters))
+    ex_filter_eff = results_df.loc[best_idx, 'ex_fluor_efficiency']
+    em_filter_names = list(map(lambda x: x.name, best_em_filters))
+    em_filter_eff = results_df.loc[best_idx, 'em_filter_efficiency']
+    
+    print(tabulate(list(zip(fluorophores,led_names,led_ex_eff,ex_filter_names,ex_filter_eff,em_filter_names,em_filter_eff)),headers=table_headers))
+    
+    table_headers = ["Fluorophore","Power_per_fluor","detectable_power","EX Filters", "EM filters"]
+    results_df.loc[best_idx, 'em_power_per_fluorophore']
+    detectable_power = [f"{np.dot(p,eff):.2e}" for p, eff in zip(results_df.loc[best_idx, 'em_power_per_fluorophore'], [results_df.loc[best_idx, 'em_filter_efficiency']]*3)]
+    
+    print(tabulate(list(zip(fluorophores,list(map(str,results_df.loc[best_idx, 'em_power_per_fluorophore'])),detectable_power)),headers=table_headers))
+
+    print(f"Mean EM Power: {results_df.loc[best_idx, 'mean_em_power']:.3e}")
+    print(f"Mean LED-EX Efficiency: {results_df.loc[best_idx, 'mean_led_ex_efficiency']:.2f}")
+    print(f"Mean EX Filter-Fluor Efficiency: {results_df.loc[best_idx, 'mean_ex_fluor_efficiency']:.2f}")
+    print(f"Mean fluor-EM Filter Efficiency: {results_df.loc[best_idx, 'mean_em_filter_efficiency']:.2f}")
     
     # Plot the best configuration using existing function
-    plot_filter_spectra(wavelengths, fluor_df, fluorophores, best_ex_filters, best_em_filters, best_leds)
+    plot_filter_spectra_components(wavelengths, fluor_df, fluorophores, best_ex_filters, best_em_filters, best_leds)
     
     # Also plot the emission power for the best configuration
-    best_filtered_leds = [led*filter for led, filter in zip(best_leds,best_ex_filters)]
-    plot_emission_power(wavelengths, fluor_df, fluorophores, fluor_conc, best_filtered_leds, led_power)
+    plot_emission_power_components(wavelengths, fluor_df, fluorophores, fluor_conc, best_ex_filters, best_leds, led_power)
     
 def filter_components_by_overlap(wavelengths, fluor_df, fluorophores, available_leds, 
-                                     available_ex_filters, available_em_filters, threshold=0.1):
+                                     available_ex_filters, available_em_filters, LED_threshold, ex_threshold, em_threshold):
     """
     Filter LEDs, excitation filters, and emission filters based on overlap with fluorophores.
     Returns a dictionary keyed by fluorophore names, with lists of indices of viable filters and LEDs.
@@ -321,17 +504,17 @@ def filter_components_by_overlap(wavelengths, fluor_df, fluorophores, available_
     for fluor in fluorophores:
         # Filter LEDs that have >threshold overlap with each fluorophore's excitation spectrum
         for i, led in enumerate(available_leds):
-            if normalized_product_integral(wavelengths, led.spectrum, fluor_df.loc[f"{fluor}", "EX"]) > threshold:
+            if normalized_product_integral(wavelengths, led.spectrum, fluor_df.loc[f"{fluor}", "EX"]) > LED_threshold:
                 filtered_components[fluor]['leds'].append(led)
 
         # Filter excitation filters with >threshold overlap with each fluorophore's excitation spectrum
         for i, ex_filter in enumerate(available_ex_filters):
-            if normalized_product_integral(wavelengths, ex_filter.spectrum, fluor_df.loc[f"{fluor}", "EX"]) > threshold:
+            if normalized_product_integral(wavelengths, ex_filter.spectrum, fluor_df.loc[f"{fluor}", "EX"]) > ex_threshold:
                 filtered_components[fluor]['ex_filters'].append(ex_filter)
 
         # Filter emission filters with >threshold overlap with each fluorophore's emission spectrum
         for i, em_filter in enumerate(available_em_filters):
-                if normalized_product_integral(wavelengths, fluor_df.loc[f"{fluor}", "EM"], em_filter.spectrum) > threshold:
+                if normalized_product_integral(wavelengths, fluor_df.loc[f"{fluor}", "EM"], em_filter.spectrum) > em_threshold:
                     filtered_components[fluor]['em_filters'].append(em_filter)
 
     # Print summary statistics
@@ -341,10 +524,17 @@ def filter_components_by_overlap(wavelengths, fluor_df, fluorophores, available_
     
     return filtered_components
     
+def nearest_n_multiples(x, n, multiple):
+    # Find the nearest multiple of 5
+    nearest = 5 * round(x / multiple)
+    # Generate n multiples below and above the nearest multiple
+    return [nearest + multiple * i for i in range(-n, n + 1)]    
+    
 ### Filter and LED Optimization ###
 if __name__ == "__main__":
     run_sim = True # Run sim or load results
-    load_file = 'OptimResults\\simulation_results_1.pkl'
+    hide_plots = False # Don't show optimization results plot
+    load_file = 'OptimResults\\ResultsFAMTexasRedCy5_5_04-02_11-33-10'
     
     if run_sim:
         # Specify fluorophore data files
@@ -354,7 +544,7 @@ if __name__ == "__main__":
         wavelengths, fluor_df = generate_fluor_df(fluor_spectra_file, fluor_props_file)
         
         # Select fluorophores
-        fluor_selection = ["FAM", "TexasRed", "Cy5_5"]
+        fluor_selection = ["FAM","TexasRed","Cy5_5"]
         
         num_fluorophores = len(fluor_selection)
             
@@ -369,45 +559,59 @@ if __name__ == "__main__":
         # Add spectra from files
         for i,file_name in enumerate(available_leds_files):
             spectrum = np.genfromtxt(file_name, delimiter=",", skip_header=True)[:,1]
-            available_leds.append(Component(i, wavelengths, spectrum, type="import"))
+            available_leds.append(Component(i, wavelengths, spectrum, type="import", name=f"{os.path.splitext(os.path.basename(file_name))[0]}"))
+            
+        _, peak_ex_wavelengths, peak_em_wavelengths = get_fluorophore_colors(wavelengths,fluor_df, fluor_selection)    
             
         # Define candidate excitation filters
         available_ex_filters = []
         
         # Add existing filters
-        multiband_filters = split_multiband_filter(wavelengths,np.genfromtxt("Filters\\TriBandpassFAMROXCy5EX.csv",delimiter=',',skip_header=True)[:,1])
+        filter_path = "Filters\\TriBandpassFAMROXCy5EX.csv"
+        multiband_filters = split_multiband_filter(wavelengths,np.genfromtxt(filter_path,delimiter=',',skip_header=True)[:,1])
         for i,filter in enumerate(multiband_filters):
-            available_ex_filters.append(Component(i, wavelengths, filter, type="import"))
+            available_ex_filters.append(Component(i, wavelengths, filter, type="import", name=f"{os.path.splitext(os.path.basename(filter_path))[0]}_{i}"))
         
         num_filters = len(available_ex_filters)
-        for i,center in enumerate([455, 495, 535, 550, 575, 590, 600, 655,680]):
-            spectrum = generate_light_spectra(wavelengths, center, 10, type="band")
-            available_ex_filters.append(Component(i+num_filters, wavelengths, spectrum, type="band"))
+        ex_filter_wavelengths = list(itertools.chain.from_iterable([nearest_n_multiples(wl,2,5) for wl in peak_ex_wavelengths])) #[455, 495, 535, 550, 575, 590, 600, 655, 680]
+        for i,center in enumerate(ex_filter_wavelengths): 
+            spectrum = generate_light_spectra(wavelengths, center, 10, type="band")*0.9
+            available_ex_filters.append(Component(i+num_filters, wavelengths, spectrum, type="band", name=f"Filter{center}_{10}nm"))
         
         # Add generated filters
         num_filters = len(available_ex_filters)
-        for i,center in enumerate([470, 480, 580, 590, 670, 680]):
-            spectrum = generate_light_spectra(wavelengths, center, 20, type="band")
-            available_ex_filters.append(Component(i+num_filters, wavelengths, spectrum, type="band"))
+        for i,center in enumerate(ex_filter_wavelengths): #[470, 480, 580, 590, 655, 670, 680]
+            spectrum = generate_light_spectra(wavelengths, center, 20, type="band")*0.9
+            available_ex_filters.append(Component(i+num_filters, wavelengths, spectrum, type="band", name=f"Filter{center}_{20}nm"))
         
         # Define candidate emission filters
         available_em_filters = []
         
         # Add existing filters
-        for center in [455, 495, 535, 550, 575, 590, 600, 655,680]:
-            spectrum = generate_light_spectra(wavelengths, center, 10, type="band")
-            available_em_filters.append(Component(i, wavelengths, spectrum,type="band"))
+        em_filter_wavelengths = list(itertools.chain.from_iterable([nearest_n_multiples(wl,2,5) for wl in peak_em_wavelengths]))
+        for center in em_filter_wavelengths: # [455, 495, 535, 550, 575, 590, 600, 610, 660, 680]
+            spectrum = generate_light_spectra(wavelengths, center, 10, type="band")*0.9
+            available_em_filters.append(Component(i, wavelengths, spectrum,type="band",name=f"Filter{center}_{10}nm"))
         
         # Add generated filters
         num_filters = len(available_em_filters)
-        for i,center in enumerate([520,530,620,630,700,720]):
-            spectrum = generate_light_spectra(wavelengths, center, 25, type="band")
-            available_em_filters.append(Component(i+num_filters, wavelengths, spectrum, type="band"))
+        for i,center in enumerate(em_filter_wavelengths): #[520,530,540,625,700,710]
+            spectrum = generate_light_spectra(wavelengths, center, 25, type="band")*0.9
+            available_em_filters.append(Component(i+num_filters, wavelengths, spectrum, type="band",name=f"Filter{center}_{25}nm"))
+        
+        num_filters = len(available_em_filters)
+        em_filter_wavelengths = list(itertools.chain.from_iterable([nearest_n_multiples(wl,1,15) for wl in peak_em_wavelengths]))
+        for i,center in enumerate(em_filter_wavelengths): #[530,540,690,700,710]
+            spectrum = generate_light_spectra(wavelengths, center, 40, type="band")*0.9
+            available_em_filters.append(Component(i+num_filters, wavelengths, spectrum, type="band",name=f"Filter{center}_{25}nm"))
         
         ### Pre filtering ###
-        overlap_threshold = 0.2
+        overlap_threshold_LED = 0.4
+        overlap_threshold_ex = 0.3
+        overlap_threshold_em = 0.2
         filtered_components = filter_components_by_overlap(wavelengths, fluor_df, fluor_selection, available_leds, 
-                                        available_ex_filters, available_em_filters, overlap_threshold)
+                                        available_ex_filters, available_em_filters, overlap_threshold_LED,
+                                        overlap_threshold_ex,overlap_threshold_em)
         
         # Run optimization
         print("Running filter and LED optimization...")
@@ -423,21 +627,15 @@ if __name__ == "__main__":
         # Save the results to a pickle file
         save_file = f"OptimResults\\Results{fluor_selection[0]}{fluor_selection[1]}{fluor_selection[2]}_{datetime.now().strftime('%m-%d_%H-%M-%S')}"
         
-        result_data = [optimization_results,wavelengths,wavelengths,fluor_df,fluor_selection,led_power]
+        result_data = [optimization_results,wavelengths,wavelengths,fluor_df,fluor_selection,fluor_conc,led_power]
         with open(save_file, 'wb') as f:
             pickle.dump(result_data, f)
+            
+        plot_optimization_results(optimization_results,wavelengths,fluor_df,fluor_selection,fluor_conc,led_power,hide_plots)
 
     else:
         with open(load_file, 'rb') as f:
-            optimization_results,wavelengths,wavelengths,fluor_df,fluor_selection,led_power = pickle.load(f)
+            optimization_results,wavelengths,wavelengths,fluor_df,fluor_selection,fluor_conc,led_power = pickle.load(f)
 
-    # Plot Pareto front
-    plot_optimization_results(optimization_results,wavelengths,fluor_df,fluor_selection,led_power)
-    
-    # Find and use the best configuration
-    best_idx = optimization_results['total_power'].idxmax()
-    optimal_ex_filters = optimization_results.loc[best_idx, 'ex_filters']
-    optimal_em_filters = optimization_results.loc[best_idx, 'em_filters']
-    optimal_leds = optimization_results.loc[best_idx, 'leds']
-    
-    print("\nUsing optimal LED and filter configuration for final analysis")
+        # Plot Pareto front
+        plot_optimization_results(optimization_results,wavelengths,fluor_df,fluor_selection,fluor_conc,led_power,hide_plots)
