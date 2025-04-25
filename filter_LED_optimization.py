@@ -25,7 +25,7 @@ class Component():
         self.type = type
         self.name = name
         
-        self.spectral_range = self.calculate_spectral_range(wavelengths, spectrum, 0.001)  # (start_wl, end_wl) at 0.1% threshold
+        self.spectral_range = self.calculate_spectral_range(wavelengths, spectrum, 0.001)  # (start_wl, end_wl) at 0.01% threshold
         
         if self.type == "band":
             self.peak_wavelength = np.mean(self.spectral_range)
@@ -83,7 +83,7 @@ def calculate_emission_power(wavelengths, df, fluorophores, C_vect, lights):
     
     return coupled_ex_power, em_power_per_fluorophore
 
-def plot_filter_spectra_components(wavelengths: list, df, fluorophores: list, ex_filters: list, em_filters: list, lights: list):
+def plot_filter_spectra_components(wavelengths: list, df, fluorophores: list, ex_filters: list, em_filters: list, lights: list, ex_eff=[], em_eff=[]):
     """
     Plots fluorophore excitation & emission spectra with highlighted overlap regions using Plotly.
     
@@ -155,9 +155,24 @@ def plot_filter_spectra_components(wavelengths: list, df, fluorophores: list, ex
             name=f"{light.name}", line=dict(width=2, dash='dot', color=color)
         ))
 
-    # Update layout with overlap percentage info
+    if ex_eff and em_eff:
+        fig.add_annotation(xref='paper',
+                        yref='paper',
+                        x=1.15,
+                        y=0.4,
+                        text=f"Filter Efficiency", 
+                        showarrow=False)
+        
+        for i, (ex,em) in enumerate(zip(ex_eff,em_eff,)):
+            fig.add_annotation(xref='paper',
+                        yref='paper',
+                        x=1.15,
+                        y=0.35-i*0.05,
+                        text=f"{fluorophores[i]}: EX: {ex:.2f} EM: {em:.2f}", 
+                        showarrow=False)
+ 
     fig.update_layout(
-        title=f"Filter Efficiency Plot",
+        title=f"Filter Efficiency Plot: {fluorophores}",
         xaxis_title="Wavelength (nm)",
         yaxis_title="Intensity/Transmittance",
         template="plotly_dark",
@@ -166,7 +181,7 @@ def plot_filter_spectra_components(wavelengths: list, df, fluorophores: list, ex
 
     fig.show()
     
-def plot_emission_power_components(wavelengths: list, df: pd.DataFrame, fluorophores: list, C_vect: list, ex_filters: list, lights: list, P_vect: float):
+def plot_emission_power_components(wavelengths: list, df: pd.DataFrame, fluorophores: list, C_vect: list, ex_filters: list, lights: list, P_vect: float, detectable_power = []):
     """
     Simulates and plots expected emission spectra when exciting fluorophores with given light sources using Plotly.
 
@@ -222,8 +237,24 @@ def plot_emission_power_components(wavelengths: list, df: pd.DataFrame, fluoroph
             name=f"Emission response of {light.name} [W]", line=dict(width=2, color=emission_color)
         ))
 
+    if detectable_power:
+        fig.add_annotation(xref='paper',
+                        yref='paper',
+                        x=1.15,
+                        y=0.6,
+                        text=f"Detectable Power [w]", 
+                        showarrow=False)
+        
+        for i, (p) in enumerate(detectable_power):
+            fig.add_annotation(xref='paper',
+                        yref='paper',
+                        x=1.15,
+                        y=0.55-i*0.05,
+                        text=f"{fluorophores[i]}: {p}", 
+                        showarrow=False)
+
     fig.update_layout(
-        title="Simulated Emission Spectrum Under Multi-Source Excitation",
+        title=f"Simulated Emission {fluorophores}",
         xaxis_title="Wavelength (nm)",
         yaxis_title="Intensity",
         template="plotly_dark",
@@ -266,8 +297,8 @@ def generate_combinations(filtered_components: dict, fluorophores: list):
     for ex_combo in ex_filter_combos:
         for em_combo in em_filter_combos:
             # Check filter bleedtrhough and construct list of filtered configs
-            for ex_filter, em_filter in zip(ex_combo,em_combo):
-                if ex_filter.spectral_range[1] >= em_filter.spectral_range[0]:
+            for (ex_filter, em_filter) in list(itertools.product(ex_combo,em_combo)):
+                if (ex_filter.spectral_range[1] >= em_filter.spectral_range[0]) and (ex_filter.spectral_range[0] <= em_filter.spectral_range[1]):
                     break
             else: # only executes if there is no bleedthrough    
                 for led_combo in led_combos: 
@@ -469,15 +500,16 @@ def plot_optimization_results(results_df,wavelengths,fluor_df,fluorophores,fluor
     print(tabulate(list(zip(fluorophores,list(map(str,results_df.loc[best_idx, 'em_power_per_fluorophore'])),detectable_power)),headers=table_headers))
 
     print(f"Mean EM Power: {results_df.loc[best_idx, 'mean_em_power']:.3e}")
+    print(f"Mean detectable Power: {np.mean(np.asarray(detectable_power,dtype=np.float64))}")
     print(f"Mean LED-EX Efficiency: {results_df.loc[best_idx, 'mean_led_ex_efficiency']:.2f}")
     print(f"Mean EX Filter-Fluor Efficiency: {results_df.loc[best_idx, 'mean_ex_fluor_efficiency']:.2f}")
     print(f"Mean fluor-EM Filter Efficiency: {results_df.loc[best_idx, 'mean_em_filter_efficiency']:.2f}")
     
     # Plot the best configuration using existing function
-    plot_filter_spectra_components(wavelengths, fluor_df, fluorophores, best_ex_filters, best_em_filters, best_leds)
+    plot_filter_spectra_components(wavelengths, fluor_df, fluorophores, best_ex_filters, best_em_filters, best_leds,ex_filter_eff,em_filter_eff)
     
     # Also plot the emission power for the best configuration
-    plot_emission_power_components(wavelengths, fluor_df, fluorophores, fluor_conc, best_ex_filters, best_leds, led_power)
+    plot_emission_power_components(wavelengths, fluor_df, fluorophores, fluor_conc, best_ex_filters, best_leds, led_power, detectable_power)
     
 def filter_components_by_overlap(wavelengths, fluor_df, fluorophores, available_leds, 
                                      available_ex_filters, available_em_filters, LED_threshold, ex_threshold, em_threshold):
@@ -524,17 +556,23 @@ def filter_components_by_overlap(wavelengths, fluor_df, fluorophores, available_
     
     return filtered_components
     
-def nearest_n_multiples(x, n, multiple):
+def nearest_n_multiples(x, n, multiple, dir="both"):
     # Find the nearest multiple of 5
     nearest = 5 * round(x / multiple)
     # Generate n multiples below and above the nearest multiple
-    return [nearest + multiple * i for i in range(-n, n + 1)]    
+    if dir == "both":
+        return  [nearest + multiple * i for i in range(-n, n + 1)] 
+    elif dir == "right":
+        return  [nearest + multiple * i for i in range(0, n + 1)] 
+    else:
+        return  [nearest + multiple * i for i in range(-n, 0)] 
+      
     
 ### Filter and LED Optimization ###
 if __name__ == "__main__":
     run_sim = True # Run sim or load results
-    hide_plots = False # Don't show optimization results plot
-    load_file = 'OptimResults\\ResultsFAMTexasRedCy5_5_04-02_11-33-10'
+    hide_plots = True # Don't show optimization results plot
+    load_file = 'OptimResults\\ResultsFAMROXCy5_04-02_18-47-59'
     
     if run_sim:
         # Specify fluorophore data files
@@ -557,7 +595,10 @@ if __name__ == "__main__":
         available_leds = []
         
         # Add spectra from files
-        for i,file_name in enumerate(available_leds_files):
+        for i,file_name in enumerate(available_leds_files): 
+            if file_name == 'LEDS\\XEG-PCRED.csv':
+                continue
+            
             spectrum = np.genfromtxt(file_name, delimiter=",", skip_header=True)[:,1]
             available_leds.append(Component(i, wavelengths, spectrum, type="import", name=f"{os.path.splitext(os.path.basename(file_name))[0]}"))
             
@@ -573,42 +614,59 @@ if __name__ == "__main__":
             available_ex_filters.append(Component(i, wavelengths, filter, type="import", name=f"{os.path.splitext(os.path.basename(filter_path))[0]}_{i}"))
         
         num_filters = len(available_ex_filters)
-        ex_filter_wavelengths = list(itertools.chain.from_iterable([nearest_n_multiples(wl,2,5) for wl in peak_ex_wavelengths])) #[455, 495, 535, 550, 575, 590, 600, 655, 680]
+        ex_filter_wavelengths = [455, 495, 535, 550, 575, 590, 600, 655, 680]
         for i,center in enumerate(ex_filter_wavelengths): 
-            spectrum = generate_light_spectra(wavelengths, center, 10, type="band")*0.9
-            available_ex_filters.append(Component(i+num_filters, wavelengths, spectrum, type="band", name=f"Filter{center}_{10}nm"))
+            spectrum = generate_light_spectra(wavelengths, center, 10, type="FWHM")*0.9
+            available_ex_filters.append(Component(i+num_filters, wavelengths, spectrum, type="FWHM", name=f"Filter{center}_{10}nm"))
         
         # Add generated filters
-        num_filters = len(available_ex_filters)
-        for i,center in enumerate(ex_filter_wavelengths): #[470, 480, 580, 590, 655, 670, 680]
-            spectrum = generate_light_spectra(wavelengths, center, 20, type="band")*0.9
-            available_ex_filters.append(Component(i+num_filters, wavelengths, spectrum, type="band", name=f"Filter{center}_{20}nm"))
+        # num_filters = len(available_ex_filters)
+        # ex_filter_wavelengths = list(itertools.chain.from_iterable([nearest_n_multiples(wl,3,5) for wl in peak_ex_wavelengths])) #[455, 495, 535, 550, 575, 590, 600, 655, 680]
+        # for i,center in enumerate(ex_filter_wavelengths): 
+        #     spectrum = generate_light_spectra(wavelengths, center, 10, type="FWHM")*0.9
+        #     available_ex_filters.append(Component(i+num_filters, wavelengths, spectrum, type="FWHM", name=f"Filter{center}_{10}nm"))
+        
+        # num_filters = len(available_ex_filters)
+        # for i,center in enumerate(ex_filter_wavelengths): #[470, 480, 580, 590, 655, 670, 680]
+        #     spectrum = generate_light_spectra(wavelengths, center, 20, type="FWHM")*0.9
+        #     available_ex_filters.append(Component(i+num_filters, wavelengths, spectrum, type="FWHM", name=f"Filter{center}_{20}nm"))
         
         # Define candidate emission filters
         available_em_filters = []
         
         # Add existing filters
-        em_filter_wavelengths = list(itertools.chain.from_iterable([nearest_n_multiples(wl,2,5) for wl in peak_em_wavelengths]))
-        for center in em_filter_wavelengths: # [455, 495, 535, 550, 575, 590, 600, 610, 660, 680]
-            spectrum = generate_light_spectra(wavelengths, center, 10, type="band")*0.9
-            available_em_filters.append(Component(i, wavelengths, spectrum,type="band",name=f"Filter{center}_{10}nm"))
+        # filter_path = "Filters\\TriBandpassFAMROXCy5EM.csv"
+        # multiband_filters = split_multiband_filter(wavelengths,np.genfromtxt(filter_path,delimiter=',',skip_header=True)[:,1])
+        # for i,filter in enumerate(multiband_filters):
+        #     available_em_filters.append(Component(i, wavelengths, filter, type="import", name=f"{os.path.splitext(os.path.basename(filter_path))[0]}_{i}"))
+        
+        
+        # num_filters = len(available_em_filters)
+        # for center in [455, 495, 535, 550, 575, 590, 600, 610, 660, 680]:
+        #     spectrum = generate_light_spectra(wavelengths, center, 10, type="band")*0.9
+        #     available_em_filters.append(Component(i, wavelengths, spectrum,type="band",name=f"Filter{center}_{10}nm"))
         
         # Add generated filters
-        num_filters = len(available_em_filters)
-        for i,center in enumerate(em_filter_wavelengths): #[520,530,540,625,700,710]
-            spectrum = generate_light_spectra(wavelengths, center, 25, type="band")*0.9
-            available_em_filters.append(Component(i+num_filters, wavelengths, spectrum, type="band",name=f"Filter{center}_{25}nm"))
+        em_filter_wavelengths = list(itertools.chain.from_iterable([nearest_n_multiples(wl,5,5,"right") for wl in peak_em_wavelengths]))
         
         num_filters = len(available_em_filters)
-        em_filter_wavelengths = list(itertools.chain.from_iterable([nearest_n_multiples(wl,1,15) for wl in peak_em_wavelengths]))
-        for i,center in enumerate(em_filter_wavelengths): #[530,540,690,700,710]
-            spectrum = generate_light_spectra(wavelengths, center, 40, type="band")*0.9
+        for i,center in enumerate([620,625,630,635]): # 620
+            spectrum = generate_light_spectra(wavelengths, center, 10, type="FWHM")*0.9
+            available_em_filters.append(Component(i+num_filters, wavelengths, spectrum, type="band",name=f"Filter{center}_{10}nm"))
+        
+        num_filters = len(available_em_filters)
+        for i,center in enumerate([620,625,630]): #[620])
+            spectrum = generate_light_spectra(wavelengths, center, 15, type="FWHM")*0.9
             available_em_filters.append(Component(i+num_filters, wavelengths, spectrum, type="band",name=f"Filter{center}_{25}nm"))
+            
+        for i,center in enumerate(em_filter_wavelengths): #em_filter_wavelengths
+            spectrum = generate_light_spectra(wavelengths, center, 25, type="FWHM")*0.9
+            available_em_filters.append(Component(i+num_filters, wavelengths, spectrum, type="band",name=f"Filter{center}_{40}nm"))
         
         ### Pre filtering ###
         overlap_threshold_LED = 0.4
         overlap_threshold_ex = 0.3
-        overlap_threshold_em = 0.2
+        overlap_threshold_em = 0.1
         filtered_components = filter_components_by_overlap(wavelengths, fluor_df, fluor_selection, available_leds, 
                                         available_ex_filters, available_em_filters, overlap_threshold_LED,
                                         overlap_threshold_ex,overlap_threshold_em)

@@ -684,6 +684,9 @@ def generate_light_spectra(wavelengths, center, width, type="gauss"):
         return band_excitation(wavelengths,center,width)
     elif type == "gauss":
         return gaussian_excitation(wavelengths, center, width)
+    elif type == "FWHM":
+        sigma = width / (2 * np.sqrt(2 * np.log(2)))
+        return gaussian_excitation(wavelengths, center, sigma)
     else:
         raise Exception("Invalid spectral distribution type")
 
@@ -719,7 +722,7 @@ if __name__ == "__main__":
     num_fluorophores = 3 # Number of fluorophores to use
     exclusion_list = ["ATTO565"]
     fluor_conc = [100e-9] * num_fluorophores # [M]
-
+    
     crosstalk_matrix = compute_crosstalk(wavelengths,fluor_df)
     crosstalk_matrix = crosstalk_matrix.drop(index=exclusion_list, columns=exclusion_list)
     
@@ -730,20 +733,22 @@ if __name__ == "__main__":
     
     # print(pareto_solutions)
     
-    
     if fluorophore_optimization: # Optimize selection
         # Select best fluorophores
         best_fluorofores, best_fluorofores_matrix, min_crosstalk, min_overlap = find_optimal_fluorophore_set(wavelengths, fluor_df, crosstalk_matrix, num_fluorophores)
 
+        print("\nOptimal fluorophore combination with minimum crosstalk:")
+        print(best_fluorofores)
+        print("\nCrosstalk matrix:")
+        print(best_fluorofores_matrix)
     else: # manual selection
         best_fluorofores = ["FAM","TexasRed","Cy5_5"]
         
         best_fluorofores_matrix = crosstalk_matrix.loc[list(best_fluorofores), list(best_fluorofores)]
         
-    print("\nOptimal fluorophore combination with minimum crosstalk:")
-    print(best_fluorofores)
-    print("\nCrosstalk matrix:")
-    print(best_fluorofores_matrix)
+        print(f"\nSelected Fluorophores: {best_fluorofores}")
+        
+    
 
     # Plot spectra of selected fluorophores
     plot_spectral_overlap_interactive(wavelengths,fluor_df, best_fluorofores)
@@ -754,13 +759,13 @@ if __name__ == "__main__":
     # Filter selection
     # ex_filters = split_multiband_filter(wavelengths,np.genfromtxt("Filters\\TriBandpassFAMROXCy5EX.csv",delimiter=',',skip_header=True)[:,1])
     # em_filters = split_multiband_filter(wavelengths,np.genfromtxt("Filters\\TriBandpassFAMROXCy5EM.csv",delimiter=',',skip_header=True)[:,1])
-    ex_filters = [generate_light_spectra(wavelengths, center, 10, type="band") for center in peak_ex_wavelengths]
-    em_filters = [generate_light_spectra(wavelengths, center, 10, type="band") for center in peak_em_wavelengths]
+    ex_filters = [generate_light_spectra(wavelengths, center, width, type="FWHM") for center,width in list(zip([491,590,655],[10,10,10]))] #[generate_light_spectra(wavelengths, center, 10, type="FWHM") for center in peak_ex_wavelengths]
+    em_filters = [generate_light_spectra(wavelengths, center, width, type="FWHM") for center,width in list(zip([540,625,705],[20,10,25]))] #generate_light_spectra(wavelengths, center, 10, type="FWHM") for center in peak_em_wavelengths]
     
     # Light seleciton
     LED_data_files = ["LEDS\\XEG-CYAN.csv", "LEDS\\XEG-AMBER.csv", "LEDS\\XEG-PHOTORED.csv"]
     lights = [np.genfromtxt(file_name,delimiter=",",skip_header=True)[:,1] for file_name in LED_data_files] # Imported spectra
-    # lights = [generate_light_spectra(wavelengths, center, 10, type="band") for center in peak_excitation_wavelengths.values()] # Generated spectra
+    # lights = [generate_light_spectra(wavelengths, center, 10, type="band") for center in peak_ex_wavelengths] # Generated spectra
     LED_power = [1] * num_fluorophores # [W]
     
     for i, (ex_filter, light) in enumerate(zip(ex_filters,lights),start=0):
